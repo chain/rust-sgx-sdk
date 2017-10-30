@@ -1,0 +1,28 @@
+[target.x86_64-unknown-linux-sgx.dependencies.std]
+
+[features]
+default = ["backtrace"]
+global_exit = []
+backtrace = ["stdio"]
+stdio = []
+
+[dependencies.core]
+path = "../rust/src/libcore"
+stage = 0
+
+[dependencies.sgx_types]
+path = "../sgx_types"
+stage = 0
+
+[dependencies.sgx_trts]
+path = "../sgx_trts"
+stage = 1
+
+[dependencies.sgx_alloc]
+path = "../sgx_alloc"
+stage = 2
+
+[dependencies.sgx_tprotected_fs]
+path = "../sgx_tprotected_fs"
+stage = 2
+

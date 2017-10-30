@@ -42,7 +42,7 @@
 //! `std`, as in [`use std::env`], or in expressions through the absolute path
 //! `::std`, as in [`::std::env::args`].
 
-#![crate_name = "sgx_tstd"]
+#![crate_name = "std"]
 #![crate_type = "rlib"]
 
 #![no_std]
