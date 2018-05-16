@@ -41,7 +41,8 @@
 extern crate sgx_trts;
 
 extern crate alloc;
-use self::alloc::heap::{Alloc, AllocErr, Layout, Excess, CannotReallocInPlace};
+use self::alloc::heap::{Alloc, AllocErr, Layout, Excess, CannotReallocInPlace, Opaque};
+use core::ptr::NonNull;
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
@@ -55,32 +56,28 @@ pub struct System;
 
 unsafe impl Alloc for System {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
         (&*self).alloc(layout)
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&mut self, layout: Layout)
-        -> Result<*mut u8, AllocErr>
+        -> Result<NonNull<Opaque>, AllocErr>
     {
         (&*self).alloc_zeroed(layout)
     }
 
     #[inline]
-    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, layout: Layout) {
         (&*self).dealloc(ptr, layout)
     }
 
     #[inline]
     unsafe fn realloc(&mut self,
-                      ptr: *mut u8,
-                      old_layout: Layout,
-                      new_layout: Layout) -> Result<*mut u8, AllocErr> {
-        (&*self).realloc(ptr, old_layout, new_layout)
-    }
-
-    fn oom(&mut self, err: AllocErr) -> ! {
-        (&*self).oom(err)
+                      ptr: NonNull<Opaque>,
+                      layout: Layout,
+                      new_size: usize) -> Result<NonNull<Opaque>, AllocErr> {
+        (&*self).realloc(ptr, layout, new_size)
     }
 
     #[inline]
@@ -95,112 +92,69 @@ unsafe impl Alloc for System {
 
     #[inline]
     unsafe fn realloc_excess(&mut self,
-                             ptr: *mut u8,
+                             ptr: NonNull<Opaque>,
                              layout: Layout,
-                             new_layout: Layout) -> Result<Excess, AllocErr> {
-        (&*self).realloc_excess(ptr, layout, new_layout)
+                             new_size: usize) -> Result<Excess, AllocErr> {
+        (&*self).realloc_excess(ptr, layout, new_size)
     }
 
     #[inline]
     unsafe fn grow_in_place(&mut self,
-                            ptr: *mut u8,
+                            ptr: NonNull<Opaque>,
                             layout: Layout,
-                            new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-        (&*self).grow_in_place(ptr, layout, new_layout)
+                            new_size: usize) -> Result<(), CannotReallocInPlace> {
+        (&*self).grow_in_place(ptr, layout, new_size)
     }
 
     #[inline]
     unsafe fn shrink_in_place(&mut self,
-                              ptr: *mut u8,
+                              ptr: NonNull<Opaque>,
                               layout: Layout,
-                              new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-        (&*self).shrink_in_place(ptr, layout, new_layout)
+                              new_size: usize) -> Result<(), CannotReallocInPlace> {
+        (&*self).shrink_in_place(ptr, layout, new_size)
     }
 }
 
 mod platform {
 
     use sgx_trts::libc::{self, c_void};
-    use core::cmp;
     use core::ptr;
+    use core::ptr::NonNull;
 
     use MIN_ALIGN;
     use System;
-    use alloc::heap::{Alloc, AllocErr, Layout};
+    use alloc::heap::{Alloc, AllocErr, Layout, Opaque};
 
     unsafe impl<'a> Alloc for &'a System {
         #[inline]
-        unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
             let ptr = if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
                 libc::malloc(layout.size()) as *mut u8
             } else {
                 aligned_malloc(&layout)
             };
-            if !ptr.is_null() {
-                Ok(ptr)
-            } else {
-                Err(AllocErr::Exhausted { request: layout })
-            }
+            NonNull::new(ptr as *mut Opaque).ok_or(AllocErr)
         }
 
         #[inline]
         unsafe fn alloc_zeroed(&mut self, layout: Layout)
-            -> Result<*mut u8, AllocErr>
+            -> Result<NonNull<Opaque>, AllocErr>
         {
             if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
                 let ptr = libc::calloc(layout.size(), 1) as *mut u8;
-                if !ptr.is_null() {
-                    Ok(ptr)
-                } else {
-                    Err(AllocErr::Exhausted { request: layout })
-                }
+                NonNull::new(ptr as *mut Opaque).ok_or(AllocErr)
             } else {
                 let ret = self.alloc(layout.clone());
                 if let Ok(ptr) = ret {
-                    ptr::write_bytes(ptr, 0, layout.size());
+                    ptr::write_bytes(ptr.as_ptr() as *mut c_void, 0, layout.size());
                 }
                 ret
             }
         }
 
         #[inline]
-        unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout) {
-            libc::free(ptr as *mut c_void)
-        }
-
-        #[inline]
-        unsafe fn realloc(&mut self,
-                          ptr: *mut u8,
-                          old_layout: Layout,
-                          new_layout: Layout) -> Result<*mut u8, AllocErr> {
-            if old_layout.align() != new_layout.align() {
-                return Err(AllocErr::Unsupported {
-                    details: "cannot change alignment on `realloc`",
-                })
-            }
-
-            if new_layout.align() <= MIN_ALIGN  && new_layout.align() <= new_layout.size() {
-                let ptr = libc::realloc(ptr as *mut c_void, new_layout.size());
-                if !ptr.is_null() {
-                    Ok(ptr as *mut u8)
-                } else {
-                    Err(AllocErr::Exhausted { request: new_layout })
-                }
-            } else {
-                let res = self.alloc(new_layout.clone());
-                if let Ok(new_ptr) = res {
-                    let size = cmp::min(old_layout.size(), new_layout.size());
-                    ptr::copy_nonoverlapping(ptr, new_ptr, size);
-                    self.dealloc(ptr, old_layout);
-                }
-                res
-            }
-        }
-
-        fn oom(&mut self, err: AllocErr) -> ! {
-
-            use sgx_trts::oom;
-            oom::rsgx_oom(err)
+        unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, _layout: Layout) {
+            libc::free(ptr.as_ptr() as *mut c_void)
         }
     }
 
