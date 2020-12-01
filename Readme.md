@@ -1,4 +1,4 @@
-# Rust SGX SDK
+# Rust SGX SDK 
 Rust SGX SDK helps developers write Intel SGX applications in Rust programming language. [[Paper pdf]](documents/ccsp17.pdf)
 
 ## v0.9.8 Release
